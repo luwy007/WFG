@@ -18,6 +18,38 @@ class AppState: ObservableObject {
     @Published var geoReady: Bool = true
     @Published var isDownloadingGeo = false
 
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let engineError = error as? EngineError, case .cancelled = engineError {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+        return false
+    }
+
+    private func showError(_ error: Error, context: String? = nil, full: Bool = false) {
+        guard !isCancellation(error) else { return }
+        errorMessage = full ? fullErrorMessage(error, context: context) : error.localizedDescription
+    }
+
+    private func fullErrorMessage(_ error: Error, context: String? = nil) -> String {
+        var parts: [String] = []
+        if let context {
+            parts.append(context)
+        }
+        parts.append(error.localizedDescription)
+
+        let reflected = String(reflecting: error)
+        if reflected != error.localizedDescription {
+            parts.append("底层错误：\(reflected)")
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
     // MARK: - Status
 
     func fetchStatus() async {
@@ -30,9 +62,9 @@ class AppState: ObservableObject {
             tunEnabled = status.tunEnabled ?? false
         } catch let e as EngineError {
             if case .engineUnreachable = e { return }
-            errorMessage = e.localizedDescription
+            showError(e)
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -46,7 +78,7 @@ class AppState: ObservableObject {
             isRunning = true
             proxyEnabled = true
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -58,7 +90,7 @@ class AppState: ObservableObject {
             isRunning = false
             proxyEnabled = false
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -83,7 +115,7 @@ class AppState: ObservableObject {
                 await fetchStatus()
             }
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -108,7 +140,7 @@ class AppState: ObservableObject {
                 await fetchStatus()
             }
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -116,7 +148,7 @@ class AppState: ObservableObject {
         isPinging = true
         defer { isPinging = false }
         do {
-            let result: [String: Int] = try await EngineAPI.get("/api/ping")
+            let result: [String: Int] = try await EngineAPI.get("/api/ping", long: true)
             pingResults = result
         } catch {
             pingResults = [:]
@@ -139,6 +171,7 @@ class AppState: ObservableObject {
             let _: OKResponse = try await EngineAPI.post("/api/geo/update", body: EmptyBody(), long: true)
             geoReady = true
         } catch {
+            guard !isCancellation(error) else { return }
             errorMessage = "Geo 数据下载失败，请确保系统代理已启动：\(error.localizedDescription)"
         }
     }
@@ -150,9 +183,9 @@ class AppState: ObservableObject {
             subscriptions = try await EngineAPI.get("/api/subscriptions")
         } catch let e as EngineError {
             if case .engineUnreachable = e { return }
-            errorMessage = e.localizedDescription
+            showError(e)
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -161,11 +194,11 @@ class AppState: ObservableObject {
         defer { isLoading = false }
         do {
             let body = AddSubRequest(name: name, url: url, autoRefresh: autoRefresh, refreshInterval: refreshInterval)
-            let _: OKResponse = try await EngineAPI.post("/api/subscriptions", body: body)
+            let _: OKResponse = try await EngineAPI.post("/api/subscriptions", body: body, long: true)
             await fetchSubscriptions()
             await fetchNodes()
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error, context: "添加订阅失败：\(name)", full: true)
         }
     }
 
@@ -183,7 +216,7 @@ class AppState: ObservableObject {
         do {
             let _: OKResponse = try await EngineAPI.delete("/api/subscriptions/logs")
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -191,10 +224,10 @@ class AppState: ObservableObject {
         do {
             let clampedInterval = min(max(refreshInterval, 1), 300)
             let body = UpdateSubRequest(autoRefresh: autoRefresh, refreshInterval: clampedInterval)
-            let _: OKResponse = try await EngineAPI.put("/api/subscriptions/\(id)", body: body)
+            let _: OKResponse = try await EngineAPI.put("/api/subscriptions/\(id)", body: body, long: true)
             await fetchSubscriptions()
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error, context: "保存订阅自动刷新设置失败", full: true)
         }
     }
 
@@ -202,11 +235,11 @@ class AppState: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            let _: OKResponse = try await EngineAPI.post("/api/subscriptions/\(id)/refresh", body: EmptyBody())
+            let _: OKResponse = try await EngineAPI.post("/api/subscriptions/\(id)/refresh", body: EmptyBody(), long: true)
             await fetchSubscriptions()
             await fetchNodes()
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error, context: "订阅更新失败", full: true)
         }
     }
 
@@ -216,7 +249,7 @@ class AppState: ObservableObject {
             await fetchSubscriptions()
             await fetchNodes()
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -237,7 +270,7 @@ class AppState: ObservableObject {
             let _: OKResponse = try await EngineAPI.post("/api/nodes/select", body: body)
             selectedNode = name
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -251,7 +284,7 @@ class AppState: ObservableObject {
             // 切换后状态可能变了（系统代理、运行状态），刷新一次
             await fetchStatus()
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
@@ -261,16 +294,20 @@ class AppState: ObservableObject {
             let _: OKResponse = try await EngineAPI.post("/api/proxy/mode", body: ModeRequest(mode: mode))
             proxyMode = mode
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 
     func testLatency(nodeName: String) async -> Int? {
         guard let encoded = nodeName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else { return nil }
         do {
-            let result: LatencyResponse = try await EngineAPI.get("/api/nodes/latency?name=\(encoded)")
+            let result: LatencyResponse = try await EngineAPI.get("/api/nodes/latency?name=\(encoded)", long: true)
+            if let index = nodes.firstIndex(where: { $0.name == nodeName }) {
+                nodes[index].latency = result.latencyMs
+            }
             return result.latencyMs
         } catch {
+            showError(error, context: "节点测速失败：\(nodeName)", full: true)
             return nil
         }
     }
@@ -281,7 +318,7 @@ class AppState: ObservableObject {
         do {
             rules = try await EngineAPI.get("/api/rules")
         } catch {
-            errorMessage = error.localizedDescription
+            showError(error)
         }
     }
 }

@@ -65,6 +65,12 @@ struct SubscriptionView: View {
             SubLogSheet(subID: logSubID, title: logSubName.isEmpty ? "订阅日志" : "\(logSubName) 日志")
         }
         .task { await state.fetchSubscriptions() }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                await state.fetchSubscriptions()
+            }
+        }
     }
 }
 
@@ -74,13 +80,16 @@ struct SubscriptionRowView: View {
     @State private var isRefreshing = false
     @State private var autoRefresh: Bool
     @State private var refreshInterval: Int
+    @State private var refreshIntervalText: String
     let onShowLogs: () -> Void
 
     init(subscription: Subscription, onShowLogs: @escaping () -> Void) {
         self.subscription = subscription
         self.onShowLogs = onShowLogs
         _autoRefresh = State(initialValue: subscription.autoRefresh)
-        _refreshInterval = State(initialValue: min(max(subscription.refreshInterval, 1), 300))
+        let clampedInterval = min(max(subscription.refreshInterval, 1), 300)
+        _refreshInterval = State(initialValue: clampedInterval)
+        _refreshIntervalText = State(initialValue: "\(clampedInterval)")
     }
 
     var body: some View {
@@ -162,38 +171,45 @@ struct SubscriptionRowView: View {
             HStack(spacing: 8) {
                 Toggle("自动刷新", isOn: Binding(
                     get: { autoRefresh },
-                    set: { newValue in
-                        autoRefresh = newValue
-                        Task {
-                            await state.updateSubscription(
-                                id: subscription.id,
-                                autoRefresh: autoRefresh,
-                                refreshInterval: refreshInterval
-                            )
-                        }
-                    }
-                ))
+		                    set: { newValue in
+		                        autoRefresh = newValue
+		                        saveSettings()
+		                    }
+		                ))
                 .toggleStyle(.checkbox)
                 .font(.caption)
 
-                Stepper(value: Binding(
-                    get: { refreshInterval },
-                    set: { newValue in
-                        refreshInterval = min(max(newValue, 1), 300)
-                        Task {
-                            await state.updateSubscription(
-                                id: subscription.id,
-                                autoRefresh: autoRefresh,
-                                refreshInterval: refreshInterval
-                            )
-                        }
-                    }
-                ), in: 1...300, step: 1) {
-                    Text("\(refreshInterval) 分钟")
-                        .font(.caption)
-                        .foregroundColor(autoRefresh ? .primary : .secondary)
-                }
-                .disabled(!autoRefresh)
+                HStack(spacing: 4) {
+                    TextField("10", text: Binding(
+                        get: { refreshIntervalText },
+                        set: { newValue in
+                            let digits = String(newValue.filter(\.isNumber).prefix(3))
+	                            refreshIntervalText = digits
+	                            guard let value = Int(digits) else { return }
+	                            refreshInterval = min(max(value, 1), 300)
+	                        }
+	                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .frame(width: 54)
+	                    .disabled(!autoRefresh)
+	                    .onSubmit { normalizeRefreshIntervalTextAndSave() }
+
+	                    Text("分钟")
+	                        .font(.caption)
+	                        .foregroundColor(autoRefresh ? .primary : .secondary)
+
+	                    Button {
+	                        normalizeRefreshIntervalTextAndSave()
+	                    } label: {
+	                        Image(systemName: "checkmark.circle")
+	                            .font(.system(size: 13))
+	                    }
+	                    .buttonStyle(.plain)
+	                    .disabled(!autoRefresh)
+	                    .help("确认刷新周期")
+	                }
+	                .disabled(!autoRefresh)
 
                 Spacer()
             }
@@ -222,10 +238,32 @@ struct SubscriptionRowView: View {
         .onChange(of: subscription.autoRefresh) { newValue in
             autoRefresh = newValue
         }
-        .onChange(of: subscription.refreshInterval) { newValue in
-            refreshInterval = min(max(newValue, 1), 300)
+	        .onChange(of: subscription.refreshInterval) { newValue in
+	            let clamped = min(max(newValue, 1), 300)
+	            refreshInterval = clamped
+	            refreshIntervalText = "\(clamped)"
+	        }
+	    }
+
+	    func saveSettings() {
+	        let id = subscription.id
+	        let autoRefresh = autoRefresh
+	        let refreshInterval = refreshInterval
+	        Task {
+	            await state.updateSubscription(
+	                id: id,
+	                autoRefresh: autoRefresh,
+	                refreshInterval: refreshInterval
+            )
         }
     }
+
+    func normalizeRefreshIntervalTextAndSave() {
+	        let normalized = min(max(Int(refreshIntervalText) ?? refreshInterval, 1), 300)
+	        refreshInterval = normalized
+	        refreshIntervalText = "\(normalized)"
+	        saveSettings()
+	    }
 
     func formatBytes(_ bytes: Int64) -> String {
         let gb = Double(bytes) / 1_073_741_824
@@ -419,6 +457,12 @@ struct SubLogSheet: View {
             isLoading = true
             logs = await state.fetchSubLogs(subID: subID)
             isLoading = false
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                logs = await state.fetchSubLogs(subID: subID)
+            }
         }
     }
 

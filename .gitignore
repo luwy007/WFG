@@ -1,0 +1,58 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Go
+bin/
+dist/
+build/
+coverage.out
+*.test
+*.prof
+
+# Project Go build output
+engine/wfg-engine
+
+# Xcode
+DerivedData/
+.derived/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+
+# Swift Package Manager / Xcode package artifacts
+.build/
+Packages/
+Package.resolved
+
+# App archives and exported builds
+MacApp/*.app
+*.xcarchive
+*.ipa
+*.dSYM/
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+.claude/

@@ -12,8 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/wfg/engine/models"
@@ -91,12 +93,15 @@ func (m *Manager) StopAutoRefreshScheduler() {
 // checkAndAutoRefresh 检查并执行自动刷新
 func (m *Manager) checkAndAutoRefresh() {
 	m.mu.RLock()
-	cfg := m.cfg
-	m.mu.RUnlock()
-
+	type refreshCandidate struct {
+		id       string
+		name     string
+		interval int
+	}
 	now := time.Now()
-	for i := range cfg.Subscriptions {
-		sub := &cfg.Subscriptions[i]
+	var candidates []refreshCandidate
+	for i := range m.cfg.Subscriptions {
+		sub := m.cfg.Subscriptions[i]
 		if !sub.AutoRefresh {
 			continue
 		}
@@ -104,14 +109,36 @@ func (m *Manager) checkAndAutoRefresh() {
 		if interval < 1 || interval > 300 {
 			interval = 60 // 默认60分钟
 		}
+		lastRefreshBase := sub.UpdatedAt
+		if sub.AutoRefreshFrom.After(lastRefreshBase) {
+			lastRefreshBase = sub.AutoRefreshFrom
+		}
 		// 如果从未更新过，或者已经超过间隔时间
-		if sub.UpdatedAt.IsZero() || now.Sub(sub.UpdatedAt) >= time.Duration(interval)*time.Minute {
-			fmt.Printf("[auto-refresh] 订阅 %s 自动刷新触发 (间隔 %d 分钟)\n", sub.Name, interval)
-			if err := m.RefreshSubscription(sub.ID); err != nil {
-				fmt.Printf("[auto-refresh] 订阅 %s 自动刷新失败: %v\n", sub.Name, err)
-			} else {
-				fmt.Printf("[auto-refresh] 订阅 %s 自动刷新成功\n", sub.Name)
-			}
+		if lastRefreshBase.IsZero() || now.Sub(lastRefreshBase) >= time.Duration(interval)*time.Minute {
+			candidates = append(candidates, refreshCandidate{
+				id:       sub.ID,
+				name:     sub.Name,
+				interval: interval,
+			})
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, sub := range candidates {
+		fmt.Printf("[auto-refresh] 订阅 %s 自动刷新触发 (间隔 %d 分钟)\n", sub.name, sub.interval)
+		if err := AppendSubLog(models.SubLogEntry{
+			Time:    time.Now(),
+			SubID:   sub.id,
+			SubName: sub.name,
+			Success: true,
+			Message: fmt.Sprintf("自动刷新触发：间隔 %d 分钟，开始检查订阅节点", sub.interval),
+		}); err != nil {
+			fmt.Printf("[auto-refresh] 订阅 %s 触发日志写入失败: %v\n", sub.name, err)
+		}
+		if err := m.RefreshSubscriptionWithSource(sub.id, "自动刷新"); err != nil {
+			fmt.Printf("[auto-refresh] 订阅 %s 自动刷新失败: %v\n", sub.name, err)
+		} else {
+			fmt.Printf("[auto-refresh] 订阅 %s 自动刷新成功\n", sub.name)
 		}
 	}
 }
@@ -147,8 +174,16 @@ func (m *Manager) GetNodes() []models.Node {
 
 // RefreshSubscription 刷新指定订阅
 func (m *Manager) RefreshSubscription(subID string) error {
+	return m.RefreshSubscriptionWithSource(subID, "手动刷新")
+}
+
+// RefreshSubscriptionWithSource 刷新指定订阅，并把触发来源写入日志
+func (m *Manager) RefreshSubscriptionWithSource(subID, source string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if source == "" {
+		source = "刷新"
+	}
 
 	var sub *models.Subscription
 	for i := range m.cfg.Subscriptions {
@@ -172,7 +207,7 @@ func (m *Manager) RefreshSubscription(subID string) error {
 	}
 	if err != nil {
 		logEntry.Success = false
-		logEntry.Message = err.Error()
+		logEntry.Message = fmt.Sprintf("%s失败：%s", source, err.Error())
 		_ = AppendSubLog(logEntry)
 		return fmt.Errorf("刷新订阅失败: %w", err)
 	}
@@ -188,9 +223,9 @@ func (m *Manager) RefreshSubscription(subID string) error {
 	logEntry.NodeCount = len(nodes)
 	logEntry.IPs = extractNodeIPs(nodes)
 	if len(logEntry.IPs) > 0 {
-		logEntry.Message = fmt.Sprintf("成功解析 %d 个节点，提取 %d 个 IP", len(nodes), len(logEntry.IPs))
+		logEntry.Message = fmt.Sprintf("%s成功：解析 %d 个节点，提取 %d 个 IP", source, len(nodes), len(logEntry.IPs))
 	} else {
-		logEntry.Message = fmt.Sprintf("成功解析 %d 个节点", len(nodes))
+		logEntry.Message = fmt.Sprintf("%s成功：解析 %d 个节点", source, len(nodes))
 	}
 	_ = AppendSubLog(logEntry)
 
@@ -387,9 +422,15 @@ func (m *Manager) watchTunProcess() {
 		if pid == "" {
 			break
 		}
-		// kill -0 仅检测进程是否存在，不发送实际信号
-		if err := exec.Command("kill", "-0", pid).Run(); err != nil {
-			break // 进程不存在
+		pidNum, err := strconv.Atoi(pid)
+		if err != nil {
+			break
+		}
+		// syscall.Kill(pid, 0) 仅检测进程是否存在，不发送实际信号。
+		// TUN 模式下 mihomo 以 root 运行，普通用户检查时可能返回 EPERM；
+		// EPERM 表示进程存在但当前用户无权发信号，不能当作退出。
+		if err := syscall.Kill(pidNum, 0); err != nil && err != syscall.EPERM {
+			break // ESRCH 等错误表示进程不存在
 		}
 		// 若 m.running 已被外部 Stop() 置为 false，退出监控
 		m.mu.RLock()

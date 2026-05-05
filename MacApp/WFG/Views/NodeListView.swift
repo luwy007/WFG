@@ -64,9 +64,30 @@ struct NodeListView: View {
     func testAllLatency() async {
         testingAll = true
         defer { testingAll = false }
-        for node in state.nodes {
-            _ = await state.testLatency(nodeName: node.name)
+
+        let nodeNames = state.nodes.map(\.name)
+        let maxConcurrentTests = 8
+        var nextIndex = 0
+
+        await withTaskGroup(of: Void.self) { group in
+            func addNextTest() {
+                guard nextIndex < nodeNames.count else { return }
+                let nodeName = nodeNames[nextIndex]
+                nextIndex += 1
+                group.addTask {
+                    _ = await state.testLatency(nodeName: nodeName)
+                }
+            }
+
+            for _ in 0..<min(maxConcurrentTests, nodeNames.count) {
+                addNextTest()
+            }
+
+            while await group.next() != nil {
+                addNextTest()
+            }
         }
+
         await state.fetchNodes()
     }
 }

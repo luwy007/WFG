@@ -22,6 +22,7 @@ type Subscription struct {
 	UserInfo        *UserInfo `json:"user_info,omitempty"` // 流量信息（部分机场提供）
 	AutoRefresh     bool      `json:"auto_refresh"`
 	RefreshInterval int       `json:"refresh_interval"` // 自动刷新周期（分钟），默认60
+	AutoRefreshFrom time.Time `json:"auto_refresh_from"`
 	Nodes           []Node    `json:"nodes,omitempty"`
 }
 

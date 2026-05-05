@@ -245,21 +245,10 @@ struct QuickActionsCard: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            HStack(spacing: 8) {
-                QuickActionButton(icon: "arrow.clockwise", title: "刷新所有订阅") {
-                    Task {
-                        for sub in state.subscriptions {
-                            await state.refreshSubscription(id: sub.id)
-                        }
-                    }
-                }
-                QuickActionButton(icon: "speedometer", title: "批量测速") {
-                    Task { await state.fetchNodes() }
-                }
-                QuickActionButton(icon: "arrow.up.arrow.down", title: modeCycleLabel(state.proxyMode)) {
-                    Task { await state.setProxyMode(nextMode(state.proxyMode)) }
-                }
+            QuickActionButton(icon: "arrow.up.arrow.down", title: modeCycleLabel(state.proxyMode)) {
+                Task { await state.setProxyMode(nextMode(state.proxyMode)) }
             }
+            .frame(width: 180)
         }
         .padding(12)
         .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MainPopoverView: View {
     @EnvironmentObject var state: AppState
@@ -70,7 +71,6 @@ struct MainPopoverView: View {
 struct ErrorBanner: View {
     let message: String
     let onDismiss: () -> Void
-    @State private var showingDetails = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -86,7 +86,7 @@ struct ErrorBanner: View {
                     .textSelection(.enabled)
 
                 Button {
-                    showingDetails = true
+                    ErrorDetailsWindow.show(message: message, onDismiss: onDismiss)
                 } label: {
                     Label("查看完整错误", systemImage: "doc.text.magnifyingglass")
                         .font(.caption2)
@@ -108,16 +108,59 @@ struct ErrorBanner: View {
         }
         .padding(8)
         .background(Color.orange.opacity(0.1))
-        .sheet(isPresented: $showingDetails) {
-            ErrorDetailsView(message: message, onDismiss: onDismiss)
+    }
+}
+
+@MainActor
+final class ErrorDetailsWindow {
+    private static var windows: [NSWindow] = []
+
+    static func show(message: String, onDismiss: @escaping () -> Void) {
+        var detailsWindow: NSWindow?
+        let content = ErrorDetailsView(message: message) {
+            copy(message)
+        } onDismiss: {
+            onDismiss()
+            detailsWindow?.close()
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "完整错误信息"
+        window.contentViewController = NSHostingController(rootView: content)
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        detailsWindow = window
+
+        windows.append(window)
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                windows.removeAll { $0 === window }
+            }
         }
     }
+
+    private static func copy(_ message: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(message, forType: .string)
+    }
+
 }
 
 struct ErrorDetailsView: View {
     let message: String
+    let onCopy: () -> Void
     let onDismiss: () -> Void
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -126,16 +169,11 @@ struct ErrorDetailsView: View {
                     .font(.headline)
                     .foregroundColor(.orange)
                 Spacer()
-                Button {
-                    copyMessage()
-                } label: {
+                Button(action: onCopy) {
                     Label("复制", systemImage: "doc.on.doc")
                 }
-                Button {
-                    onDismiss()
-                    dismiss()
-                } label: {
-                    Label("关闭", systemImage: "xmark")
+                Button(action: onDismiss) {
+                    Label("关闭提示", systemImage: "xmark")
                 }
             }
 
@@ -146,7 +184,6 @@ struct ErrorDetailsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
             }
-            .frame(minHeight: 220)
             .background(Color(NSColor.textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
@@ -154,13 +191,7 @@ struct ErrorDetailsView: View {
             )
         }
         .padding(16)
-        .frame(width: 560)
-        .frame(minHeight: 320)
-    }
-
-    private func copyMessage() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(message, forType: .string)
+        .frame(minWidth: 640, minHeight: 420)
     }
 }
 

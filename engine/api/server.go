@@ -204,7 +204,7 @@ func registerRoutes(r *gin.Engine) {
 		}
 
 		// 立即刷新
-		if err := mgr.RefreshSubscription(sub.ID); err != nil {
+		if err := mgr.RefreshSubscriptionWithSource(sub.ID, "添加订阅"); err != nil {
 			c.JSON(http.StatusOK, gin.H{"id": sub.ID, "warn": err.Error()})
 			return
 		}
@@ -234,6 +234,7 @@ func registerRoutes(r *gin.Engine) {
 			if cfg.Subscriptions[i].ID == id {
 				cfg.Subscriptions[i].AutoRefresh = req.AutoRefresh
 				cfg.Subscriptions[i].RefreshInterval = interval
+				cfg.Subscriptions[i].AutoRefreshFrom = time.Now()
 				found = true
 				break
 			}
@@ -268,7 +269,7 @@ func registerRoutes(r *gin.Engine) {
 
 	r.POST("/api/subscriptions/:id/refresh", func(c *gin.Context) {
 		id := c.Param("id")
-		if err := mgr.RefreshSubscription(id); err != nil {
+		if err := mgr.RefreshSubscriptionWithSource(id, "手动刷新"); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
@@ -469,10 +470,12 @@ func registerRoutes(r *gin.Engine) {
 			return
 		}
 
-		proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", cfg.MixedPort))
 		transport := &http.Transport{
-			Proxy:           http.ProxyURL(proxyURL),
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+		if !cfg.TunEnabled {
+			proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", cfg.MixedPort))
+			transport.Proxy = http.ProxyURL(proxyURL)
 		}
 		client := &http.Client{
 			Transport: transport,

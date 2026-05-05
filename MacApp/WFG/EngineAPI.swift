@@ -3,6 +3,7 @@ import Foundation
 enum EngineError: LocalizedError {
     case engineUnreachable
     case timeout
+    case cancelled
     case http(status: Int, body: String)
     case decode(Error)
     case other(Error)
@@ -13,6 +14,8 @@ enum EngineError: LocalizedError {
             return "无法连接 WFG 引擎（127.0.0.1:\(EngineLauncher.apiPort)）。引擎未启动或已崩溃。"
         case .timeout:
             return "引擎响应超时"
+        case .cancelled:
+            return "请求已取消"
         case .http(let status, let body):
             return "引擎返回错误 \(status)：\(body)"
         case .decode(let err):
@@ -93,8 +96,9 @@ enum EngineAPI {
             case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost, .notConnectedToInternet:
                 throw EngineError.engineUnreachable
             case .timedOut:
-                // 短超时打到了启停这种慢接口时，也归到"不可达"提示更直观
-                throw long ? EngineError.timeout : EngineError.engineUnreachable
+                throw EngineError.timeout
+            case .cancelled:
+                throw EngineError.cancelled
             default:
                 throw EngineError.other(urlErr)
             }
