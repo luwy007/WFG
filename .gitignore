@@ -45,7 +45,7 @@ Packages/
 Package.resolved
 
 # App archives and exported builds
-MacApp/*.app
+# MacApp/*.app
 *.xcarchive
 *.ipa
 *.dSYM/
