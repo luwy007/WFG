@@ -14,9 +14,14 @@ import (
 )
 
 func main() {
-	port      := flag.Int("port", 19090, "WFG 引擎 API 端口")
+	port := flag.Int("port", 19090, "WFG 引擎 API 端口")
 	parentPID := flag.Int("parent-pid", 0, "父进程 PID，消失后自动退出")
+	dataDir := flag.String("data-dir", "", "WFG 数据目录（为空则使用 WFG_DATA_DIR 或当前用户 ~/.wfg）")
 	flag.Parse()
+
+	if *dataDir != "" {
+		core.SetDataDir(*dataDir)
+	}
 
 	// 若指定了父进程 PID，启动守护 goroutine：父进程消失则自动退出
 	if *parentPID > 0 {

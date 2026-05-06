@@ -48,8 +48,8 @@ Important files:
 - `app_config.json`: WFG app configuration, subscriptions, rules, selected node, proxy mode, and TUN preference.
 - `mihomo_config.yaml`: generated mihomo configuration.
 - `mihomo`: downloaded mihomo binary.
-- `mihomo.log`: mihomo log output when launched in TUN mode.
-- `mihomo.pid`: PID file for root-launched mihomo in TUN mode.
+- `mihomo.log`: mihomo log output.
+- `mihomo.pid`: PID file used by the normal-user `osascript` TUN fallback.
 - `subscription_logs.json`: subscription refresh logs.
 - `geo/`: GeoIP, GeoSite, and MMDB data files.
 
@@ -79,8 +79,8 @@ The macOS app lives in `MacApp/WFG`.
 
 Key files:
 
-- `WFGApp.swift`: app entry point. Starts the engine when the app launches and stops it on termination.
-- `EngineLauncher.swift`: locates and launches `wfg-engine`, waits for `127.0.0.1:19090/api/status`, and terminates the engine when the app exits.
+- `WFGApp.swift`: app entry point. Ensures an engine is reachable when the app launches.
+- `EngineLauncher.swift`: connects to an existing `wfg-engine` on `127.0.0.1:19090`, or launches a bundled development fallback if no service is running.
 - `EngineAPI.swift`: typed HTTP wrapper used by the SwiftUI state layer.
 - `AppState.swift`: main observable state store. Calls engine APIs and exposes app state to views.
 - `StatusBarController.swift`: menu bar item and popover host.
@@ -225,7 +225,7 @@ In TUN mode:
 macOS routing table / utun -> mihomo TUN stack -> network
 ```
 
-TUN mode requires elevated privileges to create and manage the virtual network interface. WFG starts mihomo with administrator privileges through `osascript`, writes a PID file to `~/.wfg/mihomo.pid`, and monitors the process separately from the normal child-process path.
+TUN mode requires elevated privileges to create and manage the virtual network interface. The preferred setup is to run `wfg-engine` as a root LaunchDaemon; then the engine can start and restart mihomo directly without `osascript` authentication prompts. If the engine is running as a normal user, WFG falls back to `osascript` for TUN startup.
 
 When TUN is enabled, WFG disables the macOS system proxy to avoid proxy loops.
 
@@ -233,7 +233,6 @@ TUN config is generated with:
 
 - `enable: true`
 - `stack: mixed`
-- `device: utun1989`
 - `auto-route: true`
 - `auto-detect-interface: true`
 - `dns-hijack: any:53`
@@ -293,6 +292,18 @@ Build everything:
 scripts/build-app.sh
 ```
 
+Install the root engine service:
+
+```bash
+scripts/install-engine-service.sh
+```
+
+The service is installed as `com.wfg.engine`, listens on `127.0.0.1:19090`, and uses the current user's `~/.wfg` data directory. Uninstall it with:
+
+```bash
+scripts/uninstall-engine-service.sh
+```
+
 Run the final app:
 
 ```bash
@@ -300,4 +311,3 @@ open MacApp/WFG.app
 ```
 
 Because WFG is a menu bar app, it sets `LSUIElement=1` and does not show a normal Dock icon while running.
-

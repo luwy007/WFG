@@ -18,8 +18,21 @@ const (
 	defaultEnginePort = 19090 // 我们自己的 API 端口
 )
 
+var dataDirOverride string
+
+// SetDataDir 覆盖应用数据目录。用于 root LaunchDaemon 继续读写登录用户的 ~/.wfg。
+func SetDataDir(path string) {
+	dataDirOverride = strings.TrimSpace(path)
+}
+
 // DataDir 返回应用数据目录
 func DataDir() string {
+	if dataDirOverride != "" {
+		return dataDirOverride
+	}
+	if env := strings.TrimSpace(os.Getenv("WFG_DATA_DIR")); env != "" {
+		return env
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".wfg")
 }
@@ -276,7 +289,6 @@ func buildMihomoConfig(cfg *models.AppConfig, nodes []models.Node) map[string]an
 		result["tun"] = map[string]any{
 			"enable":                true,
 			"stack":                 "mixed",
-			"device":                "utun1989",
 			"auto-route":            true,
 			"auto-detect-interface": true,
 			"dns-hijack":            []string{"any:53"},

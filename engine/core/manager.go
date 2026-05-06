@@ -28,6 +28,7 @@ type Manager struct {
 	nodes           []models.Node // 所有节点（来自各订阅）
 	process         *exec.Cmd
 	running         bool
+	stopping        bool          // 主动停止中，避免把用户停止误判为异常退出
 	switching       bool          // TUN 模式切换中
 	switchErr       string        // 最近一次切换的错误信息
 	autoRefreshStop chan struct{} // 自动刷新停止信号
@@ -275,28 +276,18 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("生成配置失败: %w", err)
 	}
 
-	// TUN 模式下需要 root 创建 utun，走 osascript 弹授权；普通模式直接 fork 子进程
+	// TUN 模式需要 root 创建 utun。root 引擎可直接 fork；普通用户引擎保留 osascript 兜底。
 	// 注意：m.running 在 waitForMihomoAPI 确认就绪后才设为 true，
 	// 避免在 API 未就绪窗口内 reloadMihomo 被误触发。
-	if m.cfg.TunEnabled {
+	elevatedTun := m.cfg.TunEnabled && os.Geteuid() != 0
+	if elevatedTun {
 		if err := m.startMihomoElevated(); err != nil {
 			return fmt.Errorf("以管理员权限启动 mihomo 失败: %w", err)
 		}
 	} else {
-		cmd := exec.Command(MihomoBinPath(), "-f", MihomoConfigPath(), "-d", DataDir())
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("启动 mihomo 失败: %w", err)
+		if err := m.startMihomoDirect(); err != nil {
+			return err
 		}
-		m.process = cmd
-		go func() {
-			_ = cmd.Wait()
-			m.mu.Lock()
-			m.running = false
-			m.process = nil
-			m.mu.Unlock()
-		}()
 	}
 
 	// GeoData 已预下载时 mihomo 启动更快，适当缩短超时
@@ -306,14 +297,14 @@ func (m *Manager) Start() error {
 	}
 	if err := m.waitForMihomoAPI(apiTimeout); err != nil {
 		_ = m.stopLocked()
-		return fmt.Errorf("mihomo 启动超时: %w", err)
+		return fmt.Errorf("mihomo 启动超时: %w\nmihomo 最近日志:\n%s", err, tailMihomoLog(40))
 	}
 
 	// API 就绪后才标记为运行中
 	m.running = true
 
-	// TUN 模式：提权进程脱离了 m.process 管理，启动后台 goroutine 轮询 PID 存活状态
-	if m.cfg.TunEnabled {
+	// 普通用户 TUN：提权进程脱离了 m.process 管理，启动后台 goroutine 轮询 PID 存活状态
+	if elevatedTun {
 		go m.watchTunProcess()
 	}
 
@@ -324,6 +315,41 @@ func (m *Manager) Start() error {
 		})
 	}
 
+	return nil
+}
+
+func (m *Manager) startMihomoDirect() error {
+	logFile, err := os.OpenFile(filepath.Join(DataDir(), "mihomo.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("打开 mihomo 日志失败: %w", err)
+	}
+
+	cmd := exec.Command(MihomoBinPath(), "-f", MihomoConfigPath(), "-d", DataDir())
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("启动 mihomo 失败: %w", err)
+	}
+	m.process = cmd
+	fmt.Printf("[mihomo] 直接启动 pid=%d root=%t tun=%t\n", cmd.Process.Pid, os.Geteuid() == 0, m.cfg.TunEnabled)
+	go func() {
+		err := cmd.Wait()
+		_ = logFile.Close()
+		m.mu.Lock()
+		wasRunning := m.running
+		expectedStop := m.stopping
+		shouldRestart := wasRunning && !expectedStop && os.Geteuid() == 0 && m.cfg != nil && m.cfg.TunEnabled
+		m.running = false
+		m.process = nil
+		m.mu.Unlock()
+		if wasRunning {
+			fmt.Printf("[mihomo] 进程退出 pid=%d err=%v，最后日志：\n%s\n", cmd.Process.Pid, err, tailMihomoLog(40))
+		}
+		if shouldRestart {
+			go m.restartMihomoWithoutPrompt()
+		}
+	}()
 	return nil
 }
 
@@ -345,15 +371,20 @@ func (m *Manager) stopLocked() error {
 	}
 	// TUN 模式下是提权启动的游离进程，没有 m.process
 	if m.process == nil {
+		fmt.Println("[mihomo] 停止 TUN 模式 mihomo")
 		_ = stopMihomoElevated()
 		m.running = false
 	} else {
+		fmt.Printf("[mihomo] 停止普通模式 mihomo pid=%d\n", m.process.Process.Pid)
+		m.stopping = true
 		if err := m.process.Process.Kill(); err != nil {
+			m.stopping = false
 			return fmt.Errorf("停止 mihomo 失败: %w", err)
 		}
 		_ = m.process.Wait()
 		m.running = false
 		m.process = nil
+		m.stopping = false
 	}
 	// 并行等待两个端口释放，避免立即重启时 bind 冲突
 	var wg sync.WaitGroup
@@ -412,6 +443,7 @@ func (m *Manager) startMihomoElevated() error {
 
 // watchTunProcess 轮询 TUN 模式下提权进程的存活状态，进程退出时同步 m.running
 func (m *Manager) watchTunProcess() {
+	lastPID := ""
 	for {
 		time.Sleep(2 * time.Second)
 		pidData, err := os.ReadFile(mihomoPIDFile())
@@ -422,6 +454,7 @@ func (m *Manager) watchTunProcess() {
 		if pid == "" {
 			break
 		}
+		lastPID = pid
 		pidNum, err := strconv.Atoi(pid)
 		if err != nil {
 			break
@@ -441,8 +474,53 @@ func (m *Manager) watchTunProcess() {
 		}
 	}
 	m.mu.Lock()
+	wasRunning := m.running
 	m.running = false
 	m.mu.Unlock()
+	if wasRunning {
+		fmt.Printf("[mihomo] TUN 进程已退出 pid=%s，最后日志：\n%s\n", lastPID, tailMihomoLog(40))
+	}
+	_ = os.Remove(mihomoPIDFile())
+	if wasRunning {
+		m.SetSwitching(false, "TUN 进程异常退出。由于重新启动需要管理员认证，请手动点击启动。")
+	}
+}
+
+func (m *Manager) restartMihomoWithoutPrompt() {
+	delays := []time.Duration{2 * time.Second, 5 * time.Second, 10 * time.Second}
+	for attempt, delay := range delays {
+		time.Sleep(delay)
+
+		m.mu.RLock()
+		shouldRestart := m.cfg != nil && m.cfg.TunEnabled && !m.running && !m.switching
+		m.mu.RUnlock()
+		if !shouldRestart {
+			return
+		}
+
+		fmt.Printf("[mihomo] TUN 异常退出后尝试无弹窗自动重启 (%d/%d)\n", attempt+1, len(delays))
+		if err := m.Start(); err != nil {
+			msg := fmt.Sprintf("TUN 异常退出后自动重启失败 (%d/%d): %v", attempt+1, len(delays), err)
+			fmt.Printf("[mihomo] %s\n", msg)
+			m.SetSwitching(false, msg)
+			continue
+		}
+		m.SetSwitching(false, "")
+		fmt.Println("[mihomo] TUN 异常退出后已无弹窗自动重启")
+		return
+	}
+}
+
+func tailMihomoLog(maxLines int) string {
+	data, err := os.ReadFile(filepath.Join(DataDir(), "mihomo.log"))
+	if err != nil {
+		return fmt.Sprintf("读取 mihomo.log 失败: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // stopMihomoElevated 通过 osascript kill 提权启动的 mihomo

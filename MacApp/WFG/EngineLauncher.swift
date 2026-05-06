@@ -12,21 +12,11 @@ enum EngineLauncher {
 
     static let apiPort: UInt16 = 19090
 
-    /// App 启动时调用。若端口已被占用则先 kill 旧引擎，再启动绑定当前父进程 PID 的新引擎。
+    /// App 启动时调用。优先连接已运行的后台引擎；没有服务时才拉起随 App 生命周期的开发兜底引擎。
     static func start() {
         if isPortOpen(apiPort) {
-            NSLog("[WFG] killing stale engine on :\(apiPort)")
-            let kill = Process()
-            kill.launchPath = "/usr/bin/pkill"
-            kill.arguments = ["-f", "wfg-engine"]
-            try? kill.run()
-            kill.waitUntilExit()
-            // 等端口释放，最多 3 秒
-            var waited = 0
-            while isPortOpen(apiPort) && waited < 30 {
-                Thread.sleep(forTimeInterval: 0.1)
-                waited += 1
-            }
+            NSLog("[WFG] using existing engine on :\(apiPort)")
+            return
         }
         guard let binURL = locateBinary() else {
             NSLog("[WFG] wfg-engine binary not found in bundle or dev path")
@@ -61,7 +51,7 @@ enum EngineLauncher {
         }
     }
 
-    /// App 退出时调用。给引擎一个优雅退出的机会，超时再 kill。
+    /// App 退出时调用。只停止本 App 拉起的开发兜底引擎；LaunchDaemon 后台引擎不随前端退出。
     static func stop() {
         guard let p = process, p.isRunning else { return }
         p.terminate() // SIGTERM，引擎会自己清理系统代理
